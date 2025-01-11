@@ -16,7 +16,12 @@ The following variables are available:
 - `PROXY_PASSWORD`: Self explanatory
 - `PROXY_URL`: The base URL of the proxy to use
 - `TARGET_NAME`: The name to change to
-- `DROP_TIME`: When to start changing names
+- `DROPTIME_MIN`: When to start changing names [UNUSED]
+- `DROPTIME_MAX` When to stop changing names [UNUSED]
+
+Unused Env vars must be set in code directly.
+
+## Accounts
 
 Acccounts must be in the `accs.txt` file.
 
