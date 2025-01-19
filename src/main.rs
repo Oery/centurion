@@ -78,6 +78,7 @@ async fn main() -> Result<()> {
             workers.iter().map(|w| w.last_poll).max().unwrap_or(now)
         };
 
+        // Keep waiting until the next poll time
         if now < last_poll + fire_rate {
             tokio::time::sleep(Duration::from_millis(10)).await;
             continue;

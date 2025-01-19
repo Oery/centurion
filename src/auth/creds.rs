@@ -19,6 +19,7 @@ pub fn load_creds() -> Result<Vec<MicrosoftCredentials>> {
         let mut parts = line.split(':');
         let email = parts.next().unwrap_or_default();
         let password = parts.next().unwrap_or_default();
+
         creds.push(MicrosoftCredentials {
             email: email.to_string(),
             password: password.to_string(),

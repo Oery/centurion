@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use chrono::{Duration, TimeDelta};
 use reqwest::Client;
 use serde::Deserialize;
@@ -52,6 +52,7 @@ impl Worker {
     pub async fn init(&mut self) -> Result<()> {
         let proxy_password = std::env::var("PROXY_PASSWORD")?;
         let proxy_host = std::env::var("PROXY_URL")?;
+
         let proxy_url = format!("http://{}:{}@{}", self.proxy, proxy_password, proxy_host);
 
         self.client = Some(
@@ -61,32 +62,35 @@ impl Worker {
                 .build()?,
         );
 
-        if let Some(ref client) = self.client {
-            let res = client.get("http://ip-api.com/json").send().await?;
-            let ip: IpResponse = res.json().await?;
-            self.ip = ip.query;
+        let Some(ref client) = self.client else {
+            return Err(anyhow!("Failed to create client."));
+        };
 
-            let res = match self.account.uuid == "giftcard" {
-                true => create_profile(&self.target_name, &self.account.access_token, client).await,
-                false => change_name(&self.target_name, &self.account.access_token, client).await,
-            };
+        // Fetch Proxy IP
+        let res = client.get("http://ip-api.com/json").send().await?;
+        self.ip = res.json::<IpResponse>().await?.query;
 
-            if let Err(e) = res {
-                if e.to_string().contains("429 Too Many Requests") {
-                    println!("IP is banned, trying another one");
-                    let proxy_username = std::env::var("PROXY_USERNAME")?;
-                    let session_id = format!("{:x}", rand::random::<u32>() & 0xFFFFFF);
-                    self.proxy = format!("{proxy_username}-session-{session_id}-lifetime-60");
-                    let proxy_url =
-                        format!("http://{}:{}@{}", self.proxy, proxy_password, proxy_host);
+        let res = match self.account.uuid == "giftcard" {
+            true => create_profile(&self.target_name, &self.account.access_token, client).await,
+            false => change_name(&self.target_name, &self.account.access_token, client).await,
+        };
 
-                    self.client = Some(
-                        Client::builder()
-                            .cookie_store(true)
-                            .proxy(reqwest::Proxy::all(&proxy_url)?)
-                            .build()?,
-                    );
-                }
+        if let Err(e) = res {
+            if e.to_string().contains("429 Too Many Requests") {
+                println!("IP is banned, trying another one");
+
+                let proxy_username = std::env::var("PROXY_USERNAME")?;
+                let session_id = format!("{:x}", rand::random::<u32>() & 0xFFFFFF);
+                self.proxy = format!("{proxy_username}-session-{session_id}-lifetime-60");
+
+                let proxy_url = format!("http://{}:{}@{}", self.proxy, proxy_password, proxy_host);
+
+                self.client = Some(
+                    Client::builder()
+                        .cookie_store(true)
+                        .proxy(reqwest::Proxy::all(&proxy_url)?)
+                        .build()?,
+                );
             }
         }
 
@@ -94,52 +98,31 @@ impl Worker {
     }
 
     pub async fn poll(&self, target_name: &str) -> Result<()> {
-        if self.client.is_none() {
-            println!("No client available, skipping");
+        let Some(ref client) = self.client else {
+            return Err(anyhow!("No client available, skipping"));
+        };
+
+        let result = match self.account.uuid.as_str() {
+            "giftcard" => create_profile(target_name, &self.account.access_token, client).await,
+            _ => change_name(target_name, &self.account.access_token, client).await,
+        };
+
+        if result.is_ok() {
+            println!(
+                "Claimed username on {} | IP: {}",
+                self.account.username, self.ip
+            );
+            return Ok(());
         }
 
-        if let Some(ref client) = self.client {
-            if self.account.uuid == "giftcard" {
-                match create_profile(target_name, &self.account.access_token, client).await {
-                    Ok(_) => println!(
-                        "Claimed username on {} | IP: {}",
-                        self.account.username, self.ip
-                    ),
-                    Err(e) => {
-                        if e.to_string().contains("400 Bad Request") {
-                            println!(
-                                "Name not available {} | IP: {}",
-                                self.account.username, self.ip
-                            );
-                        } else {
-                            println!(
-                                "Error claiming username on {} | IP: {}: {e}",
-                                self.account.username, self.ip
-                            )
-                        }
-                    }
-                }
-            } else {
-                match change_name(target_name, &self.account.access_token, client).await {
-                    Ok(_) => println!(
-                        "Changed name on {} | IP: {}",
-                        self.account.username, self.ip
-                    ),
-                    Err(e) => {
-                        if e.to_string().contains("403 Forbidden") {
-                            println!(
-                                "Name not available {} | IP: {}",
-                                self.account.username, self.ip
-                            );
-                        } else {
-                            println!(
-                                "Error changing name on {} | IP: {}: {e}",
-                                self.account.username, self.ip
-                            )
-                        }
-                    }
-                }
-            };
+        let error = result.unwrap_err().to_string();
+        let username = &self.account.username;
+        let ip = &self.ip;
+
+        if error.contains("400") || error.contains("403") {
+            println!("Name not available {username} | IP: {ip}",);
+        } else {
+            eprintln!("Error claiming username on {username} | IP: {ip}: {error}",)
         }
 
         Ok(())
@@ -150,17 +133,4 @@ pub fn get_next_worker(workers: &mut [Worker]) -> Option<&mut Worker> {
     workers
         .iter_mut()
         .find(|worker| worker.last_poll + worker.min_delay < chrono::Utc::now())
-}
-
-pub fn get_last_poll(workers: &[Worker]) -> chrono::DateTime<chrono::Local> {
-    workers.iter().fold(
-        chrono::Local::now() - TimeDelta::days(30),
-        |last, worker| {
-            if worker.last_poll > last {
-                worker.last_poll
-            } else {
-                last
-            }
-        },
-    )
 }
